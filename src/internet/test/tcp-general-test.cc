@@ -261,19 +261,27 @@ TcpGeneralTest::CreateSocket (Ptr<Node> node, TypeId socketType,
   ObjectFactory rttFactory;
   ObjectFactory congestionAlgorithmFactory;
   ObjectFactory socketFactory;
+  ObjectFactory pcsFactory;
+  ObjectFactory rsFactory;
 
   rttFactory.SetTypeId (RttMeanDeviation::GetTypeId ());
   congestionAlgorithmFactory.SetTypeId (congControl);
   socketFactory.SetTypeId (socketType);
+  pcsFactory.SetTypeId (PerConnectionState::GetTypeId ());
+  rsFactory.SetTypeId (RateSample::GetTypeId ());
 
   Ptr<RttEstimator> rtt = rttFactory.Create<RttEstimator> ();
   Ptr<TcpSocketMsgBase> socket = DynamicCast<TcpSocketMsgBase> (socketFactory.Create ());
   Ptr<TcpCongestionOps> algo = congestionAlgorithmFactory.Create<TcpCongestionOps> ();
+  Ptr<PerConnectionState> pcs = pcsFactory.Create<PerConnectionState> ();
+  Ptr<RateSample> rs = rsFactory.Create<RateSample> ();
 
   socket->SetNode (node);
   socket->SetTcp (node->GetObject<TcpL4Protocol> ());
   socket->SetRtt (rtt);
   socket->SetCongestionControlAlgorithm (algo);
+  socket->SetPerConnectionState (pcs);
+  socket->SetRateSample (rs);
 
   return socket;
 }

@@ -332,6 +332,8 @@ public:
    */
   Ptr<const TcpOptionSack> CraftSackOption (const SequenceNumber32 &seq, uint8_t available) const;
 
+  std::vector<SequenceNumber32> GetLastSackedList ();
+
 private:
   friend std::ostream & operator<< (std::ostream & os, TcpTxBuffer const & tcpTxBuf);
 
@@ -494,6 +496,7 @@ private:
 
   std::pair <PacketList::const_iterator, SequenceNumber32> m_highestSack; //!< Highest SACK byte
 
+  std::vector <SequenceNumber32> m_lastSackedList;
 };
 
 /**

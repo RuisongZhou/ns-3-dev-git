@@ -295,6 +295,7 @@ TcpSocketBase::TcpSocketBase (void)
     m_minRto (Time::Max ()),
     m_clockGranularity (Seconds (0.001)),
     m_lastRtt (Seconds (0.0)),
+    m_minRtt (Time::Max ()),
     m_delAckTimeout (Seconds (0.0)),
     m_persistTimeout (Seconds (0.0)),
     m_cnTimeout (Seconds (0.0)),
@@ -339,6 +340,9 @@ TcpSocketBase::TcpSocketBase (void)
   m_txBuffer = CreateObject<TcpTxBuffer> ();
   m_tcb      = CreateObject<TcpSocketState> ();
 
+  m_rs  = CreateObject<RateSample> ();
+  m_pcs = CreateObject<PerConnectionState> ();
+
   bool ok;
 
   ok = m_tcb->TraceConnectWithoutContext ("CongestionWindow",
@@ -377,6 +381,7 @@ TcpSocketBase::TcpSocketBase (const TcpSocketBase& sock)
     m_minRto (sock.m_minRto),
     m_clockGranularity (sock.m_clockGranularity),
     m_lastRtt (sock.m_lastRtt),
+    m_minRtt (sock.m_minRtt),
     m_delAckTimeout (sock.m_delAckTimeout),
     m_persistTimeout (sock.m_persistTimeout),
     m_cnTimeout (sock.m_cnTimeout),
@@ -408,6 +413,8 @@ TcpSocketBase::TcpSocketBase (const TcpSocketBase& sock)
     m_retxThresh (sock.m_retxThresh),
     m_limitedTx (sock.m_limitedTx),
     m_isFirstPartialAck (sock.m_isFirstPartialAck),
+    m_rs (sock.m_rs),
+    m_pcs (sock.m_pcs),
     m_txTrace (sock.m_txTrace),
     m_rxTrace (sock.m_rxTrace)
 {
@@ -429,6 +436,7 @@ TcpSocketBase::TcpSocketBase (const TcpSocketBase& sock)
   m_txBuffer = CopyObject (sock.m_txBuffer);
   m_rxBuffer = CopyObject (sock.m_rxBuffer);
   m_tcb = CopyObject (sock.m_tcb);
+
   if (sock.m_congestionControl)
     {
       m_congestionControl = sock.m_congestionControl->Fork ();
@@ -845,6 +853,7 @@ TcpSocketBase::Send (Ptr<Packet> p, uint32_t flags)
           m_errno = ERROR_MSGSIZE;
           return -1;
         }
+      OnApplicationWrite ();
       if (m_shutdownSend)
         {
           m_errno = ERROR_SHUTDOWN;
@@ -1645,11 +1654,23 @@ TcpSocketBase::ReceivedAck (Ptr<Packet> packet, const TcpHeader& tcpHeader)
   bool scoreboardUpdated = false;
   ReadOptions (tcpHeader, scoreboardUpdated);
 
+  if (scoreboardUpdated)
+    {
+      std::vector<SequenceNumber32> sackedList = m_txBuffer->GetLastSackedList ();
+
+      for(std::vector<SequenceNumber32>::iterator it = sackedList.begin(); it != sackedList.end(); ++it)
+      {
+        UpdateRateSample (*it);
+      }
+    }
+
   SequenceNumber32 ackNumber = tcpHeader.GetAckNumber ();
 
   // RFC 6675 Section 5: 2nd, 3rd paragraph and point (A), (B) implementation
   // are inside the function ProcessAck
   ProcessAck (ackNumber, scoreboardUpdated);
+
+  GenerateRateSample ();
 
   // RFC 6675, Section 5, point (C), try to send more data. NB: (C) is implemented
   // inside SendPendingData
@@ -1743,6 +1764,11 @@ TcpSocketBase::ProcessAck (const SequenceNumber32 &ackNumber, bool scoreboardUpd
         {
           segsAcked += 1;
           m_bytesAckedNotProcessed -= m_tcb->m_segmentSize;
+        }
+
+      for (SequenceNumber32 ackedSeq = m_txBuffer->HeadSequence (); ackedSeq < ackNumber; ackedSeq++)
+        {
+          UpdateRateSample (ackedSeq);
         }
 
       // RFC 6675, Section 5, part (B)
@@ -2779,6 +2805,7 @@ TcpSocketBase::SendDataPacket (SequenceNumber32 seq, uint32_t maxSize, bool with
       Simulator::ScheduleNow (&TcpSocketBase::NotifyDataSent, this,
                               (seq + sz - m_tcb->m_highTxMark.Get ()));
     }
+  TcpRatePacketSent (seq, sz);
   // Update highTxMark
   m_tcb->m_highTxMark = std::max (seq + sz, m_tcb->m_highTxMark.Get ());
   return sz;
@@ -3157,6 +3184,7 @@ TcpSocketBase::EstimateRtt (const TcpHeader& tcpHeader)
       // RFC 6298, clause 2.4
       m_rto = Max (m_rtt->GetEstimate () + Max (m_clockGranularity, m_rtt->GetVariation () * 4), m_minRto);
       m_lastRtt = m_rtt->GetEstimate ();
+      m_minRtt  = m_rtt->GetEstimate () < m_minRtt ? m_rtt->GetEstimate () : m_minRtt;
       NS_LOG_FUNCTION (this << m_lastRtt);
     }
 }
@@ -3930,6 +3958,114 @@ TcpSocketBase::SafeSubtraction (uint32_t a, uint32_t b)
   return 0;
 }
 
+void
+TcpSocketBase::TcpRatePacketSent (SequenceNumber32 seq, uint32_t sz)
+{
+  Time now = Simulator::Now ();
+  if (BytesInFlight () == 0)
+    {
+      m_pcs->m_firstSentTime = now;
+      m_pcs->m_deliveredTime = now;
+    }
+
+  Ptr<PerPacketState> pps;
+  if (m_perPacketState.find (seq) == m_perPacketState.end ())
+    {
+      pps = CreateObject<PerPacketState> ();
+    }
+  else
+    {
+      pps = m_perPacketState[seq];
+    }
+
+  pps->m_firstSentTime = m_pcs->m_firstSentTime;
+  pps->m_deliveredTime = m_pcs->m_deliveredTime;
+  pps->m_isAppLimited  = (m_pcs->m_appLimited != 0);
+  pps->m_delivered     = m_pcs->m_delivered;
+  pps->m_sentTime      = now;
+  pps->m_size          = sz;
+
+  m_perPacketState[seq] = pps;
+}
+
+void
+TcpSocketBase::UpdateRateSample (SequenceNumber32 seq)
+{
+
+  if (m_perPacketState.find (seq) == m_perPacketState.end ())
+    {
+      return;
+    }
+
+
+  Ptr<PerPacketState> pps = m_perPacketState[seq];
+
+  if (pps->m_deliveredTime == Seconds (0))
+    {
+      return;
+    }
+
+  m_pcs->m_delivered += pps->m_size;
+  m_pcs->m_deliveredTime = Simulator::Now ();
+
+  if (pps->m_delivered > m_rs->m_priorDelivered)
+    {
+      m_rs->m_priorDelivered   = pps->m_delivered;
+      m_rs->m_priorTime        = pps->m_deliveredTime;
+      m_rs->m_isAppLimited     = pps->m_isAppLimited;
+      m_rs->m_sendElapsed      = pps->m_sentTime - pps->m_firstSentTime;
+      m_rs->m_ackElapsed       = m_pcs->m_deliveredTime - pps->m_deliveredTime;
+      m_pcs->m_firstSentTime   = pps->m_sentTime;
+    }
+
+  pps->m_deliveredTime = Seconds (0);
+  m_perPacketState[seq] = pps;
+}
+
+bool
+TcpSocketBase::GenerateRateSample ()
+{
+  if (m_pcs->m_appLimited && m_pcs->m_delivered > m_pcs->m_appLimited)
+    {
+      m_pcs->m_appLimited = 0;
+    }
+
+  if (m_rs->m_priorTime == Seconds (0))
+    {
+      return false;
+    }
+
+  m_rs->m_interval = std::max (m_rs->m_sendElapsed, m_rs->m_ackElapsed);
+
+  m_rs->m_delivered = m_pcs->m_delivered - m_rs->m_priorDelivered;
+
+  if (m_rs->m_interval < m_minRtt)
+    {
+      m_rs->m_interval = Seconds (0);
+      return false;
+    }
+
+  if (m_rs->m_interval != Seconds (0))
+    {
+      m_rs->m_deliveryRate = DataRate (m_rs->m_delivered * 8.0 / m_rs->m_interval.GetSeconds ());
+    }
+  return true;
+}
+
+void
+TcpSocketBase::OnApplicationWrite ()
+{
+//TODO
+
+//  if (m_txBuffer->TailSequence () - m_tcb->m_nextTxSequence < m_tcb->m_segmentSize &&
+//       m_pcs->m_pendingTransmissions == 0 &&
+//       BytesInFlight () < m_tcb->m_cWnd   && 
+//       m_txBuffer->GetLostCount () <= m_txBuffer->GetRetransmitsCount ())
+//    {
+//      m_pcs->m_appLimited = m_pcs->m_delivered + BytesInFlight () ? : 1;
+//    }
+}
+
 //RttHistory methods
 RttHistory::RttHistory (SequenceNumber32 s, uint32_t c, Time t)
   : seq (s),
@@ -3945,6 +4081,110 @@ RttHistory::RttHistory (const RttHistory& h)
     time (h.time),
     retx (h.retx)
 {
+}
+
+PerConnectionState::PerConnectionState ()
+  : m_delivered (0),
+    m_deliveredTime (Seconds (0)),
+    m_firstSentTime (Seconds (0)),
+    m_appLimited (0),
+    m_writeSeq (0),
+    m_pendingTransmissions (0),
+    m_lostOut (0),
+    m_retransOut (0)
+{
+}
+
+PerConnectionState::PerConnectionState (const PerConnectionState& pcs)
+  : m_delivered (pcs.m_delivered),
+    m_deliveredTime (pcs.m_deliveredTime),
+    m_firstSentTime (pcs.m_firstSentTime),
+    m_appLimited (pcs.m_appLimited),
+    m_writeSeq (pcs.m_writeSeq),
+    m_pendingTransmissions (pcs.m_pendingTransmissions),
+    m_lostOut (pcs.m_lostOut),
+    m_retransOut (pcs.m_retransOut)
+{
+}
+
+TypeId
+PerConnectionState::GetTypeId (void)
+{
+  static TypeId tid = TypeId ("ns3::PerConnectionState")
+    .SetParent<Object> ()
+    .SetGroupName ("Internet")
+    .AddConstructor <PerConnectionState> ()
+  ;
+  return tid;
+}
+
+PerPacketState::PerPacketState ()
+  : m_delivered (0),
+    m_deliveredTime (Seconds (0)),
+    m_firstSentTime (Seconds (0)),
+    m_isAppLimited (false),
+    m_sentTime (Seconds (0)),
+    m_size (0)
+{
+}
+
+PerPacketState::PerPacketState (const PerPacketState& pps)
+  : m_delivered (pps.m_delivered),
+    m_deliveredTime (pps.m_deliveredTime),
+    m_firstSentTime (pps.m_firstSentTime),
+    m_isAppLimited (pps.m_isAppLimited),
+    m_sentTime (pps.m_sentTime),
+    m_size (pps.m_size)
+{
+}
+
+RateSample::RateSample ()
+  : m_deliveryRate (0),
+    m_isAppLimited (false),
+    m_interval (Seconds (0)),
+    m_delivered (0),
+    m_priorDelivered (0),
+    m_priorTime (Seconds (0)),
+    m_sendElapsed (Seconds (0)),
+    m_ackElapsed (Seconds (0))
+{
+}
+
+RateSample::RateSample (const RateSample& rs)
+  : m_deliveryRate (rs.m_deliveryRate),
+    m_isAppLimited (rs.m_isAppLimited),
+    m_interval (rs.m_interval),
+    m_delivered (rs.m_delivered),
+    m_priorDelivered (rs.m_priorDelivered),
+    m_priorTime (rs.m_priorTime),
+    m_sendElapsed (rs.m_sendElapsed),
+    m_ackElapsed (rs.m_ackElapsed)
+{
+}
+
+TypeId
+RateSample::GetTypeId (void)
+{
+  static TypeId tid = TypeId ("ns3::RateSample")
+    .SetParent<Object> ()
+    .SetGroupName ("Internet")
+    .AddConstructor <RateSample> ()
+  ;
+  return tid;
+}
+
+void
+TcpSocketBase::SetPerConnectionState (Ptr<PerConnectionState> pcs)
+{
+  NS_LOG_FUNCTION (this << pcs);
+  m_pcs = pcs;
+}
+
+void
+TcpSocketBase::SetRateSample (Ptr<RateSample> rs)
+{
+  NS_LOG_FUNCTION (this << rs);
+  m_rs = rs;
 }
 
 } // namespace ns3

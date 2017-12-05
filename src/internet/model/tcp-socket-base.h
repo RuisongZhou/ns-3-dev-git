@@ -23,6 +23,8 @@
 
 #include <stdint.h>
 #include <queue>
+#include <map>
+#include "ns3/data-rate.h"
 #include "ns3/callback.h"
 #include "ns3/traced-value.h"
 #include "ns3/tcp-socket.h"
@@ -76,6 +78,72 @@ public:
 
 /// Container for RttHistory objects
 typedef std::deque<RttHistory> RttHistory_t;
+
+class PerConnectionState : public Object
+{
+public:
+  /**
+   * Get the type ID.
+   * \brief Get the type ID.
+   * \return the object TypeId
+   */
+  static TypeId GetTypeId (void);
+
+  PerConnectionState ();
+
+  PerConnectionState (const PerConnectionState& pcs); // Copy constructor
+public:
+  uint64_t        m_delivered;
+  Time            m_deliveredTime;
+  Time            m_firstSentTime;
+  uint32_t        m_appLimited;
+  uint32_t        m_writeSeq;
+  uint32_t        m_pendingTransmissions;
+  uint32_t        m_lostOut;
+  uint32_t        m_retransOut;
+};
+
+class PerPacketState  : public Object
+{
+public:
+  PerPacketState ();
+
+  PerPacketState (const PerPacketState& pps); // Copy constructor
+public:
+  uint64_t        m_delivered;
+  Time            m_deliveredTime;
+  Time            m_firstSentTime;
+  uint32_t        m_isAppLimited;
+  Time            m_sentTime;
+  uint32_t        m_size;
+};
+
+typedef std::map<SequenceNumber32, Ptr<PerPacketState>> PerPacketState_t;
+
+class RateSample : public Object
+{
+public:
+
+/**
+ * Get the type ID.
+ * \brief Get the type ID.
+ * \return the object TypeId
+ */
+static TypeId GetTypeId (void);
+
+  RateSample ();
+
+  RateSample (const RateSample& rs);
+public:
+  DataRate      m_deliveryRate;
+  uint32_t      m_isAppLimited;
+  Time          m_interval;
+  uint32_t      m_delivered;
+  uint32_t      m_priorDelivered;
+  Time          m_priorTime;
+  Time          m_sendElapsed;
+  Time          m_ackElapsed;
+};
 
 /**
  * \brief Data structure that records the congestion state of a connection
@@ -1071,6 +1139,18 @@ protected:
    */
   static uint32_t SafeSubtraction (uint32_t a, uint32_t b);
 
+  void TcpRatePacketSent (SequenceNumber32 seq, uint32_t sz);
+
+  void UpdateRateSample (SequenceNumber32 seq);
+
+  bool GenerateRateSample ();
+
+  void OnApplicationWrite ();
+
+  void SetPerConnectionState (Ptr<PerConnectionState> pcs);
+
+  void SetRateSample (Ptr<RateSample> rs);
+
 protected:
   // Counters and events
   EventId           m_retxEvent;       //!< Retransmission event
@@ -1090,6 +1170,7 @@ protected:
   Time              m_minRto;          //!< minimum value of the Retransmit timeout
   Time              m_clockGranularity; //!< Clock Granularity used in RTO calcs
   TracedValue<Time> m_lastRtt;         //!< Last RTT sample collected
+  Time              m_minRtt;
   Time              m_delAckTimeout;   //!< Time to delay an ACK
   Time              m_persistTimeout;  //!< Time between sending 1-byte probes
   Time              m_cnTimeout;       //!< Timeout for connection retry
@@ -1151,6 +1232,11 @@ protected:
 
   // Guesses over the other connection end
   bool m_isFirstPartialAck; //!< First partial ACK during RECOVERY
+
+  // Rate Sample related variables
+  Ptr<RateSample>         m_rs;
+  Ptr<PerConnectionState> m_pcs;
+  PerPacketState_t        m_perPacketState;
 
   // The following two traces pass a packet with a TCP header
   TracedCallback<Ptr<const Packet>, const TcpHeader&,
