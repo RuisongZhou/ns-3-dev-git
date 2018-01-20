@@ -27,9 +27,25 @@
 #include "ns3/sequence-number.h"
 #include "ns3/nstime.h"
 #include "ns3/tcp-option-sack.h"
+#include "ns3/tcp-socket-base.h"
+#include "ns3/data-rate.h"
 
 namespace ns3 {
 class Packet;
+class TcpSocketState;
+
+struct RateSample
+{
+  DataRate      m_deliveryRate;   //!< The delivery rate sample
+  uint32_t      m_isAppLimited;   //!< Indicates whether the rate sample is application-limited
+  Time          m_interval;       //!< The length of the sampling interval
+  uint32_t      m_delivered;      //!< The amount of data marked as delivered over the sampling interval
+  uint32_t      m_priorDelivered; //!< The delivered count of the most recent packet delivered
+  Time          m_priorTime;      //!< The delivered time of the most recent packet delivered
+  Time          m_sendElapsed;    //!< Send time interval calculated from the most recent packet delivered
+  Time          m_ackElapsed;     //!< ACK time interval calculated from the most recent packet delivered
+  uint32_t      m_lastAckedSackedBytes;   //!< Size of data sacked in the last ack
+};
 
 /**
  * \ingroup tcp
@@ -62,6 +78,11 @@ public:
   Time m_lastSent;      //!< Timestamp of the time at which the segment has
                         //   been sent last time
   bool m_sacked;        //!< Indicates if the segment has been SACKed
+
+  uint64_t        m_delivered;      //!< Connection's delivered data at the time the packet was sent
+  Time            m_deliveredTime;  //!< Connection's delivered time at the time the packet was sent
+  Time            m_firstSentTime;  //!< Connection's first sent time at the time the packet was sent
+  bool        m_isAppLimited;   //!< Connection's app limited at the time the packet was sent
 };
 
 /**
@@ -332,6 +353,53 @@ public:
    */
   Ptr<const TcpOptionSack> CraftSackOption (const SequenceNumber32 &seq, uint8_t available) const;
 
+  /**
+   * \brief Resets m_lastAckedSackedBytes to zero
+   */
+  void ResetLastAckedSackedBytes ();
+
+  /**
+   * \brief Returns size of data (s)acked in the last ack
+   *
+   * \return Total bytes of data (s)acked in the last ack
+   */
+  uint32_t GetLastAckedSackedBytes ();
+
+  /**
+   * \brief Updates per packet variables required for rate sampling on each
+   * packet transmission
+   */
+  void UpdatePacketSent (SequenceNumber32 seq, uint32_t sz, uint32_t bytesInFlight);
+
+  /**
+   * \brief Calculates delivery rate on arrival or each acknowledged
+   *
+   * \returns True if delivery rate is updated
+   */
+  void UpdateRateSample (TcpTxItem *pps);
+
+  /**
+   * \brief Calculates delivery rate on arrival or each acknowledged
+   *
+   * \returns True if delivery rate is updated
+   */
+  bool GenerateRateSample ();
+
+  /**
+   * \brief Checks if connection is app-limited upon each write from the application
+   */
+  void OnApplicationWrite ();
+
+  /**
+   * \brief Returns ptr to RateSample class
+   */
+  struct RateSample * GetRateSample ();
+
+  /**
+   * \brief Set the TcpSocketState
+   */
+  void SetTcpSocketState (Ptr<TcpSocketState> tcb);
+
 private:
   friend std::ostream & operator<< (std::ostream & os, TcpTxBuffer const & tcpTxBuf);
 
@@ -494,6 +562,8 @@ private:
 
   std::pair <PacketList::const_iterator, SequenceNumber32> m_highestSack; //!< Highest SACK byte
 
+  Ptr<TcpSocketState> m_tcb;
+  struct RateSample   m_rs;
 };
 
 /**

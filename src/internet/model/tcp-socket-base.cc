@@ -263,7 +263,11 @@ TcpSocketState::TcpSocketState (void)
     m_pacing (false),
     m_maxPacingRate (0),
     m_currentPacingRate (0),
-    m_minRtt (Time::Max ())
+    m_minRtt (Time::Max ()),
+    m_delivered (0),
+    m_deliveredTime (Seconds (0)),
+    m_firstSentTime (Seconds (0)),
+    m_appLimited (0)
 {
 }
 
@@ -283,7 +287,11 @@ TcpSocketState::TcpSocketState (const TcpSocketState &other)
     m_pacing (other.m_pacing),
     m_maxPacingRate (other.m_maxPacingRate),
     m_currentPacingRate (other.m_currentPacingRate),
-    m_minRtt (other.m_minRtt)
+    m_minRtt (other.m_minRtt),
+    m_delivered (other.m_delivered),
+    m_deliveredTime (other.m_deliveredTime),
+    m_firstSentTime (other.m_firstSentTime),
+    m_appLimited (other.m_appLimited)
 {
 }
 
@@ -356,6 +364,7 @@ TcpSocketBase::TcpSocketBase (void)
   m_rxBuffer = CreateObject<TcpRxBuffer> ();
   m_txBuffer = CreateObject<TcpTxBuffer> ();
   m_tcb      = CreateObject<TcpSocketState> ();
+  m_txBuffer->SetTcpSocketState (m_tcb);
 
   m_tcb->m_currentPacingRate = m_tcb->m_maxPacingRate;
   m_pacingTimer.SetFunction (&TcpSocketBase::NotifyPacingPerformed, this);
@@ -451,10 +460,10 @@ TcpSocketBase::TcpSocketBase (const TcpSocketBase& sock)
   m_txBuffer = CopyObject (sock.m_txBuffer);
   m_rxBuffer = CopyObject (sock.m_rxBuffer);
   m_tcb = CopyObject (sock.m_tcb);
-
   m_tcb->m_currentPacingRate = m_tcb->m_maxPacingRate;
   m_pacingTimer.SetFunction (&TcpSocketBase::NotifyPacingPerformed, this);
 
+  m_txBuffer->SetTcpSocketState (m_tcb);
   if (sock.m_congestionControl)
     {
       m_congestionControl = sock.m_congestionControl->Fork ();
@@ -1563,13 +1572,21 @@ TcpSocketBase::EnterRecovery ()
   // (4.2) ssthresh = cwnd = (FlightSize / 2)
   m_tcb->m_ssThresh = m_congestionControl->GetSsThresh (m_tcb,
                                                         BytesInFlight ());
-  if (m_sackEnabled)
+
+  if (m_congestionControl->HasCongControl ())
     {
-      m_tcb->m_cWnd = m_tcb->m_ssThresh;
+      m_congestionControl->CongControl (m_tcb, m_txBuffer->GetRateSample ());
     }
   else
     {
-      m_tcb->m_cWnd = m_tcb->m_ssThresh + m_dupAckCount * m_tcb->m_segmentSize;
+      if (m_sackEnabled)
+        {
+          m_tcb->m_cWnd = m_tcb->m_ssThresh;
+        }
+      else
+        {
+          m_tcb->m_cWnd = m_tcb->m_ssThresh + m_dupAckCount * m_tcb->m_segmentSize;
+        }
     }
 
   NS_LOG_INFO (m_dupAckCount << " dupack. Enter fast recovery mode." <<
@@ -1606,7 +1623,7 @@ TcpSocketBase::DupAck ()
 
   if (!m_sackEnabled && m_tcb->m_congState == TcpSocketState::CA_RECOVERY)
     { // Increase cwnd for every additional dupack (RFC2582, sec.3 bullet #3)
-      m_tcb->m_cWnd += m_tcb->m_segmentSize;
+      TcpCongControl (0);     // Number of segsAcked is zero as this is a dupack
       NS_LOG_INFO (m_dupAckCount << " Dupack received in fast recovery mode."
                    "Increase cwnd to " << m_tcb->m_cWnd);
       SendPendingData (m_connected);
@@ -1669,6 +1686,7 @@ TcpSocketBase::ReceivedAck (Ptr<Packet> packet, const TcpHeader& tcpHeader)
   // Upon the receipt of any ACK containing SACK information, the
   // scoreboard MUST be updated via the Update () routine (done in ReadOptions)
   bool scoreboardUpdated = false;
+  m_txBuffer->ResetLastAckedSackedBytes ();
   ReadOptions (tcpHeader, scoreboardUpdated);
 
   SequenceNumber32 ackNumber = tcpHeader.GetAckNumber ();
@@ -1676,6 +1694,8 @@ TcpSocketBase::ReceivedAck (Ptr<Packet> packet, const TcpHeader& tcpHeader)
   // RFC 6675 Section 5: 2nd, 3rd paragraph and point (A), (B) implementation
   // are inside the function ProcessAck
   ProcessAck (ackNumber, scoreboardUpdated);
+
+  m_txBuffer->GenerateRateSample ();
 
   // RFC 6675, Section 5, point (C), try to send more data. NB: (C) is implemented
   // inside SendPendingData
@@ -1792,7 +1812,7 @@ TcpSocketBase::ProcessAck (const SequenceNumber32 &ackNumber, bool scoreboardUpd
               m_tcb->m_cWnd = SafeSubtraction (m_tcb->m_cWnd, bytesAcked);
               if (segsAcked >= 1)
                 {
-                  m_tcb->m_cWnd += m_tcb->m_segmentSize;
+                  TcpCongControl (segsAcked);
                 }
             }
 
@@ -1828,7 +1848,7 @@ TcpSocketBase::ProcessAck (const SequenceNumber32 &ackNumber, bool scoreboardUpd
         {
           m_congestionControl->PktsAcked (m_tcb, segsAcked, m_lastRtt);
 
-          m_congestionControl->IncreaseWindow (m_tcb, segsAcked);
+          TcpCongControl (segsAcked);
 
           NS_LOG_DEBUG ("Ack of " << ackNumber << ", equivalent of " << segsAcked <<
                         " segments in CA_LOSS. Cong Control Called, cWnd=" << m_tcb->m_cWnd <<
@@ -1910,14 +1930,17 @@ TcpSocketBase::ProcessAck (const SequenceNumber32 &ackNumber, bool scoreboardUpd
               NewAck (ackNumber, true);
               // Follow NewReno procedures to exit FR if SACK is disabled
               // (RFC2582 sec.3 bullet #5 paragraph 2, option 1)
-              m_tcb->m_cWnd = std::min (m_tcb->m_ssThresh.Get (),
-                                        BytesInFlight () + m_tcb->m_segmentSize);
+              if (!m_congestionControl->HasCongControl ())
+                {
+                  m_tcb->m_cWnd = std::min (m_tcb->m_ssThresh.Get (),
+                                    BytesInFlight () + m_tcb->m_segmentSize);
+                }
               NS_LOG_DEBUG ("Leaving Fast Recovery; BytesInFlight() = " <<
                             BytesInFlight () << "; cWnd = " << m_tcb->m_cWnd);
             }
           else
             {
-              m_congestionControl->IncreaseWindow (m_tcb, segsAcked);
+              TcpCongControl (segsAcked);
 
               NS_LOG_LOGIC ("Congestion control called: " <<
                             " cWnd: " << m_tcb->m_cWnd <<
@@ -2821,6 +2844,8 @@ TcpSocketBase::SendDataPacket (SequenceNumber32 seq, uint32_t maxSize, bool with
       Simulator::ScheduleNow (&TcpSocketBase::NotifyDataSent, this,
                               (seq + sz - m_tcb->m_highTxMark.Get ()));
     }
+
+  m_txBuffer->UpdatePacketSent (seq, sz, BytesInFlight());
   // Update highTxMark
   m_tcb->m_highTxMark = std::max (seq + sz, m_tcb->m_highTxMark.Get ());
   return sz;
@@ -4030,6 +4055,25 @@ TcpSocketBase::NotifyPacingPerformed (void)
   SendPendingData (m_connected);
 }
 
+
+void
+TcpSocketBase::TcpCongControl (uint32_t segsAcked)
+{
+  if (m_congestionControl->HasCongControl ())
+    {
+      m_congestionControl->CongControl (m_tcb, m_txBuffer->GetRateSample ());
+      return;
+    }
+
+  if (m_tcb->m_congState == TcpSocketState::CA_RECOVERY)
+    {
+      m_tcb->m_cWnd += m_tcb->m_segmentSize;
+    }
+  else
+    {
+      m_congestionControl->IncreaseWindow (m_tcb, segsAcked);
+    }
+}
 
 //RttHistory methods
 RttHistory::RttHistory (SequenceNumber32 s, uint32_t c, Time t)

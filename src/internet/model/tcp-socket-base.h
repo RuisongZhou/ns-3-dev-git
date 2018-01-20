@@ -48,6 +48,7 @@ class Packet;
 class TcpL4Protocol;
 class TcpHeader;
 class TcpCongestionOps;
+class TcpTxBuffer;
 
 /**
  * \ingroup tcp
@@ -187,6 +188,13 @@ public:
   DataRate               m_maxPacingRate;         //!< Max Pacing rate
   DataRate               m_currentPacingRate;     //!< Current Pacing rate
   Time                   m_minRtt;                //!< Minimum RTT observed throughout the connection
+
+  Time                   m_minRtt;           //!< Minimum RTT observed throughout the connection
+
+  uint64_t               m_delivered;        //!< The total amount of data in bytes delivered so far
+  Time                   m_deliveredTime;    //!< Simulator time when m_delivered was last updated
+  Time                   m_firstSentTime;    //!< The send time of the packet that was most recently marked as delivered
+  uint32_t               m_appLimited;       //!< The index of the last transmitted packet marked as application-limited
 
   /**
    * \brief Get cwnd in segments rather than bytes
@@ -1096,6 +1104,16 @@ protected:
    * \brief Notify Pacing
    */
   void NotifyPacingPerformed (void);
+
+  /**
+   * \brief Selects congestion ops method for cwnd adjustment
+   *
+   * This method determines whether to use CongControl or follow the
+   * normal cwnd increase/decrease.
+   *
+   * \param segsAcked count of segments acked
+   */
+  void TcpCongControl (uint32_t segsAcked);
 
 protected:
   // Counters and events
