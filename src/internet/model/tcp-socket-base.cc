@@ -278,7 +278,12 @@ TcpSocketState::TcpSocketState (const TcpSocketState &other)
     m_currentPacingRate (other.m_currentPacingRate),
     m_minRtt (other.m_minRtt),
     m_bytesInFlight (other.m_bytesInFlight),
-    m_lastRtt (other.m_lastRtt)
+    m_lastRtt (other.m_lastRtt),
+    m_delivered (other.m_delivered),
+    m_deliveredTime (other.m_deliveredTime),
+    m_firstSentTime (other.m_firstSentTime),
+    m_appLimited (other.m_appLimited),
+    m_txItemDelivered (other.m_txItemDelivered)
 {
 }
 
@@ -295,6 +300,8 @@ TcpSocketBase::TcpSocketBase (void)
   m_rxBuffer = CreateObject<TcpRxBuffer> ();
   m_txBuffer = CreateObject<TcpTxBuffer> ();
   m_tcb      = CreateObject<TcpSocketState> ();
+
+  m_txBuffer->SetTcpSocketState (m_tcb);
 
   m_tcb->m_currentPacingRate = m_tcb->m_maxPacingRate;
   m_pacingTimer.SetFunction (&TcpSocketBase::NotifyPacingPerformed, this);
@@ -396,6 +403,8 @@ TcpSocketBase::TcpSocketBase (const TcpSocketBase& sock)
   m_txBuffer = CopyObject (sock.m_txBuffer);
   m_rxBuffer = CopyObject (sock.m_rxBuffer);
   m_tcb = CopyObject (sock.m_tcb);
+
+  m_txBuffer->SetTcpSocketState (m_tcb);
 
   m_tcb->m_currentPacingRate = m_tcb->m_maxPacingRate;
   m_pacingTimer.SetFunction (&TcpSocketBase::NotifyPacingPerformed, this);
@@ -1619,6 +1628,12 @@ TcpSocketBase::ReceivedAck (Ptr<Packet> packet, const TcpHeader& tcpHeader)
   NS_ASSERT (0 != (tcpHeader.GetFlags () & TcpHeader::ACK));
   NS_ASSERT (m_tcb->m_segmentSize > 0);
 
+  struct RateSample * rs = m_txBuffer->GetRateSample ();
+  rs->m_priorInFlight = m_tcb->m_bytesInFlight.Get ();
+
+  uint32_t lostOut = m_txBuffer->GetLost ();
+  uint32_t delivered = m_tcb->m_delivered;
+
   // RFC 6675, Section 5, 1st paragraph:
   // Upon the receipt of any ACK containing SACK information, the
   // scoreboard MUST be updated via the Update () routine (done in ReadOptions)
@@ -1628,6 +1643,12 @@ TcpSocketBase::ReceivedAck (Ptr<Packet> packet, const TcpHeader& tcpHeader)
   SequenceNumber32 ackNumber = tcpHeader.GetAckNumber ();
   SequenceNumber32 oldHeadSequence = m_txBuffer->HeadSequence ();
   m_txBuffer->DiscardUpTo (ackNumber);
+
+  NS_LOG_INFO ("BytesInFlight :: " << BytesInFlight ());
+
+  m_txBuffer->GenerateRateSample ();
+  rs->m_packetLoss = std::abs ((int) lostOut - (int) m_txBuffer->GetLost ());
+  rs->m_lastAckedSackedBytes = m_tcb->m_delivered - delivered;
 
   // RFC 6675 Section 5: 2nd, 3rd paragraph and point (A), (B) implementation
   // are inside the function ProcessAck
@@ -2778,8 +2799,10 @@ TcpSocketBase::SendDataPacket (SequenceNumber32 seq, uint32_t maxSize, bool with
       Simulator::ScheduleNow (&TcpSocketBase::NotifyDataSent, this,
                               (seq + sz - m_tcb->m_highTxMark.Get ()));
     }
+
   // Update highTxMark
   m_tcb->m_highTxMark = std::max (seq + sz, m_tcb->m_highTxMark.Get ());
+  m_txBuffer->UpdatePacketSent (seq, sz);
   return sz;
 }
 

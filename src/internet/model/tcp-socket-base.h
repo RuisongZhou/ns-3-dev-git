@@ -196,6 +196,12 @@ public:
   TracedValue<uint32_t>  m_bytesInFlight {0};        //!< Bytes in flight
   TracedValue<Time>      m_lastRtt {Seconds (0.0)};  //!< Last RTT sample collected
 
+  uint64_t               m_delivered       {0};              //!< The total amount of data in bytes delivered so far
+  Time                   m_deliveredTime   {Seconds (0)};    //!< Simulator time when m_delivered was last updated
+  Time                   m_firstSentTime   {Seconds (0)};    //!< The send time of the packet that was most recently marked as delivered
+  uint32_t               m_appLimited      {0};              //!< The index of the last transmitted packet marked as application-limited
+  uint32_t               m_txItemDelivered {0};
+
   /**
    * \brief Get cwnd in segments rather than bytes
    *
