@@ -1520,8 +1520,12 @@ TcpSocketBase::EnterRecovery ()
   // compatibility with old ns-3 versions
   uint32_t bytesInFlight = m_sackEnabled ? BytesInFlight () : BytesInFlight () + m_tcb->m_segmentSize;
   m_tcb->m_ssThresh = m_congestionControl->GetSsThresh (m_tcb, bytesInFlight);
-  m_tcb->m_cWnd = m_tcb->m_ssThresh;
-  m_cWndInfl = m_tcb->m_ssThresh + m_dupAckCount * m_tcb->m_segmentSize;
+
+  if (!m_congestionControl->HasCongControl ())
+    {
+      m_tcb->m_cWnd = m_tcb->m_ssThresh;
+      m_cWndInfl = m_tcb->m_ssThresh + m_dupAckCount * m_tcb->m_segmentSize;
+    }
 
   NS_LOG_INFO (m_dupAckCount << " dupack. Enter fast recovery mode." <<
                "Reset cwnd to " << m_tcb->m_cWnd << ", ssthresh to " <<
@@ -1559,7 +1563,7 @@ TcpSocketBase::DupAck ()
       ++m_dupAckCount;
     }
 
-  if (!m_sackEnabled && m_tcb->m_congState == TcpSocketState::CA_RECOVERY)
+  if (!m_congestionControl->HasCongControl () && !m_sackEnabled && m_tcb->m_congState == TcpSocketState::CA_RECOVERY)
     {
       // If we are in recovery and we receive a dupack, one segment
       // has left the network. This is equivalent to a SACK of one block.
@@ -1609,7 +1613,7 @@ TcpSocketBase::DupAck ()
           // Not clear in RFC. We don't do this here, since we still have
           // to retransmit the segment.
 
-          if (!m_sackEnabled && m_limitedTx)
+          if (!m_congestionControl->HasCongControl () && !m_sackEnabled && m_limitedTx)
             {
               m_txBuffer->AddRenoSack ();
 
@@ -1653,6 +1657,12 @@ TcpSocketBase::ReceivedAck (Ptr<Packet> packet, const TcpHeader& tcpHeader)
   // RFC 6675 Section 5: 2nd, 3rd paragraph and point (A), (B) implementation
   // are inside the function ProcessAck
   ProcessAck (ackNumber, scoreboardUpdated, oldHeadSequence);
+
+  if (m_congestionControl->HasCongControl ())
+    {
+      m_congestionControl->CongControl (m_tcb, rs);
+      m_cWndInfl = m_tcb->m_cWnd;
+    }
 
   // If there is any data piggybacked, store it into m_rxBuffer
   if (packet->GetSize () > 0)
@@ -1825,15 +1835,17 @@ TcpSocketBase::ProcessAck (const SequenceNumber32 &ackNumber, bool scoreboardUpd
       else if (ackNumber < m_recover && m_tcb->m_congState == TcpSocketState::CA_LOSS)
         {
           m_congestionControl->PktsAcked (m_tcb, segsAcked, m_tcb->m_lastRtt);
-          m_congestionControl->IncreaseWindow (m_tcb, segsAcked);
-
-          NS_LOG_DEBUG (" Cong Control Called, cWnd=" << m_tcb->m_cWnd <<
-                        " ssTh=" << m_tcb->m_ssThresh);
-          if (!m_sackEnabled)
+          if (!m_congestionControl->HasCongControl ())
             {
-              NS_ASSERT_MSG (m_txBuffer->GetSacked () == 0,
-                             "Some segment got dup-acked in CA_LOSS state: " <<
-                             m_txBuffer->GetSacked ());
+              m_congestionControl->IncreaseWindow (m_tcb, segsAcked);
+              NS_LOG_DEBUG (" Cong Control Called, cWnd=" << m_tcb->m_cWnd <<
+                            " ssTh=" << m_tcb->m_ssThresh);
+              if (!m_sackEnabled)
+                {
+                  NS_ASSERT_MSG (m_txBuffer->GetSacked () == 0,
+                                 "Some segment got dup-acked in CA_LOSS state: " <<
+                                 m_txBuffer->GetSacked ());
+                }
             }
           NewAck (ackNumber, true);
         }
@@ -1912,21 +1924,25 @@ TcpSocketBase::ProcessAck (const SequenceNumber32 &ackNumber, bool scoreboardUpd
           if (exitedFastRecovery)
             {
               NewAck (ackNumber, true);
-              // Follow NewReno procedures to exit FR if SACK is disabled
-              // (RFC2582 sec.3 bullet #5 paragraph 2, option 2)
-              m_cWndInfl = m_tcb->m_ssThresh.Get ();
-              // For SACK connections, we maintain the cwnd = ssthresh. In fact,
-              // this ACK was received in RECOVERY phase, not in OPEN. So we
-              // are not allowed to increase the window
-              NS_LOG_DEBUG ("Leaving Fast Recovery; BytesInFlight() = " <<
-                            BytesInFlight () << "; cWnd = " << m_tcb->m_cWnd);
+              if (!m_congestionControl->HasCongControl ())
+                {
+                  // Follow NewReno procedures to exit FR if SACK is disabled
+                  // (RFC2582 sec.3 bullet #5 paragraph 2, option 2)
+                  m_cWndInfl = m_tcb->m_ssThresh.Get ();
+                  // For SACK connections, we maintain the cwnd = ssthresh. In fact,
+                  // this ACK was received in RECOVERY phase, not in OPEN. So we
+                  // are not allowed to increase the window
+                  NS_LOG_DEBUG ("Leaving Fast Recovery; BytesInFlight() = " <<
+                                BytesInFlight () << "; cWnd = " << m_tcb->m_cWnd);
+                }
             }
           else
             {
-              m_congestionControl->IncreaseWindow (m_tcb, segsAcked);
-
-              m_cWndInfl = m_tcb->m_cWnd;
-
+              if (!m_congestionControl->HasCongControl ())
+                {
+                  m_congestionControl->IncreaseWindow (m_tcb, segsAcked);
+                  m_cWndInfl = m_tcb->m_cWnd;
+                }
               NS_LOG_LOGIC ("Congestion control called: " <<
                             " cWnd: " << m_tcb->m_cWnd <<
                             " ssTh: " << m_tcb->m_ssThresh <<
