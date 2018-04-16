@@ -867,6 +867,33 @@ provided by TcpTxBuffer to query the scoreboard; please refer to the Doxygen
 documentation (and to in-code comments) if you want to learn more about this
 implementation.
 
+Delivery Rate Estimation
+++++++++++++++++++++++++
+Current TCP implementation measures the approximate value of the delivery rate of
+inflight data based on Delivery Rate Estimation.
+
+High level idea:
+The algorithm keeps track of 2 variables:
+
+1. `delivered`: Total amount of data delivered so far.
+
+2. `deliveredStamp`: Last time `delivered` was updated.
+
+When a packet is transmitted, the value of `delivered (d0)` and `deliveredStamp (t0)`
+is stored in its respective TcpTxItem using `UpdatePacketSent ()`.
+
+When an acknowledgement comes for this packet, the value of `delivered` and `deliveredStamp`
+is updated to `d1` and `t1` using `UpdateRateSample ()`.
+
+After processing the acknowledgement, the rate sample is calculated using `GenerateRateSample ()`,
+
+.. math:: delivery_rate = (d1 - d0)/(t1 - t0)
+
+
+The implementation to estimate delivery rate is available under TcpTxBuffer.
+
+More information (Delivery Rate Estimation): https://tools.ietf.org/html/draft-cheng-iccrg-delivery-rate-estimation-00
+
 Current limitations
 +++++++++++++++++++
 
