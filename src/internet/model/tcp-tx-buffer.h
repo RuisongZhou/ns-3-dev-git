@@ -475,6 +475,17 @@ private:
   /**
    * \brief Get a block of data previously transmitted
    *
+   * \see GetPacketFromList
+   *
+   * \param numBytes number of bytes to copy
+   * \param seq sequence requested
+   * \returns the item that contains the right packet
+   */
+  TcpTxItem* GetTransmittedSegment (uint32_t numBytes, const SequenceNumber32 &seq);
+
+  /**
+   * \brief Get a block of data previously transmitted and Mark it as retransmitted
+   *
    * This is clearly a retransmission, and if everything is going well,
    * the block requested is matching perfectly with another one requested
    * in the past. If not, fragmentation or merge are required. We manage
@@ -486,7 +497,7 @@ private:
    * \param seq sequence requested
    * \returns the item that contains the right packet
    */
-  TcpTxItem* GetTransmittedSegment (uint32_t numBytes, const SequenceNumber32 &seq);
+  TcpTxItem* MarkTransmittedSegment (uint32_t numBytes, const SequenceNumber32 &seq);
 
   /**
    * \brief Get a block (which is returned as Packet) from a list

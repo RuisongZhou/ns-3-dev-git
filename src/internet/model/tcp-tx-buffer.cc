@@ -234,7 +234,7 @@ TcpTxBuffer::CopyFromSequence (uint32_t numBytes, const SequenceNumber32& seq)
   if (m_firstByteSeq + m_sentSize >= seq + s)
     {
       // already sent this block completely
-      outItem = GetTransmittedSegment (s, seq);
+      outItem = MarkTransmittedSegment (s, seq);
       NS_ASSERT (outItem != nullptr);
       NS_ASSERT (!outItem->m_sacked);
 
@@ -341,7 +341,15 @@ TcpTxBuffer::GetTransmittedSegment (uint32_t numBytes, const SequenceNumber32 &s
         }
     }
 
-  TcpTxItem *item = GetPacketFromList (m_sentList, m_firstByteSeq, s, seq, &listEdited);
+  return GetPacketFromList (m_sentList, m_firstByteSeq, s, seq, &listEdited);
+}
+
+TcpTxItem*
+TcpTxBuffer::MarkTransmittedSegment (uint32_t numBytes, const SequenceNumber32 &seq)
+{
+  NS_LOG_FUNCTION (this << numBytes << seq);
+
+  TcpTxItem *item = GetTransmittedSegment (numBytes, seq);
 
   if (! item->m_retrans)
     {
@@ -599,7 +607,7 @@ TcpTxBuffer::MergeItems (TcpTxItem *t1, TcpTxItem *t2) const
 
   // If one is retrans and the other is not, cancel the retransmitted flag.
   // We are merging this segment for the retransmit, so the count will
-  // be updated in GetTransmittedSegment.
+  // be updated in MarkTransmittedSegment.
   if (! AreEquals (t1->m_retrans, t2->m_retrans))
     {
       if (t1->m_retrans)
