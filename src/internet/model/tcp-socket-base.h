@@ -481,15 +481,6 @@ public:
     }
 
   /**
-   * \brief ECN Modes
-   */
-  typedef enum
-    {
-      NoEcn = 0,   //!< ECN is not enabled.
-      ClassicEcn   //!< ECN functionality as described in RFC 3168.
-    } EcnMode_t;
-
-  /**
    * \brief Checks if TOS has no ECN bits
    *
    * \return true if TOS does not have any ECN bits set; otherwise false
@@ -534,7 +525,7 @@ public:
    *
    * \param ecnMode Mode of ECN. Currently NoEcn and ClassicEcn is supported.
    */
-  void SetEcn (EcnMode_t ecnMode);
+  void SetEcnMode (TcpSocketState::EcnMode_t ecnMode);
 
   // Necessary implementations of null functions from ns3::Socket
   virtual enum SocketErrno GetErrno (void) const;    // returns m_errno
@@ -1267,7 +1258,6 @@ protected:
   Timer m_pacingTimer {Timer::REMOVE_ON_DESTROY}; //!< Pacing Event
 
   // Parameters related to Explicit Congestion Notification
-  EcnMode_t                     m_ecnMode    {EcnMode_t::NoEcn};      //!< Socket ECN capability
   TracedValue<SequenceNumber32> m_ecnEchoSeq {0};      //!< Sequence number of the last received ECN Echo
   TracedValue<SequenceNumber32> m_ecnCESeq   {0};      //!< Sequence number of the last received Congestion Experienced
   TracedValue<SequenceNumber32> m_ecnCWRSeq  {0};      //!< Sequence number of the last sent CWR

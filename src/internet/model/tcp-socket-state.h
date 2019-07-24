@@ -99,6 +99,15 @@ public:
     CA_EVENT_NON_DELAYED_ACK, /**< Non-delayed ack is sent */
   } TcpCAEvent_t;
 
+  /**
+   * \brief ECN Modes
+   */
+  typedef enum
+    {
+      NoEcn = 0,   //!< ECN is not enabled.
+      ClassicEcn   //!< ECN functionality as described in RFC 3168.
+    } EcnMode_t;
+
    /**
    * \brief Definition of the Ecn state machine
    *
@@ -156,6 +165,8 @@ public:
   TracedValue<Time>      m_lastRtt {Seconds (0.0)};  //!< Last RTT sample collected
 
   Ptr<TcpRxBuffer>       m_rxBuffer;                 //!< Rx buffer (reordering buffer)
+
+  EcnMode_t              m_ecnMode {NoEcn};      //!< Socket ECN capability
 
   /**
    * \brief Get cwnd in segments rather than bytes

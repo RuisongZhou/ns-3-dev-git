@@ -94,6 +94,13 @@ Ptr<TcpCongestionOps> TcpDctcp::Fork (void)
 }
 
 void
+TcpDctcp::Init (Ptr<TcpSocketState> tcb)
+{
+  NS_LOG_FUNCTION (this << "Enabling Classic Ecn for Dctcp");
+  tcb->m_ecnMode = TcpSocketState::ClassicEcn;
+}
+
+void
 TcpDctcp::ReduceCwnd (Ptr<TcpSocketState> tcb)
 {
   NS_LOG_FUNCTION (this << tcb);
@@ -136,6 +143,12 @@ TcpDctcp::SetDctcpAlpha (double alpha)
 {
   NS_LOG_FUNCTION (this << alpha);
   m_alpha = alpha;
+}
+
+bool
+TcpDctcp::IsL4S (void)
+{
+  return true;
 }
 
 void

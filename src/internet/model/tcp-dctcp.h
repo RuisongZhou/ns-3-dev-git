@@ -65,6 +65,15 @@ public:
    */
   virtual std::string GetName () const;
 
+  /**
+   * \brief Set configuration required by congestion control algorithm
+   *
+   * \param ecnMode ECN Mode
+   */
+  virtual void Init (Ptr<TcpSocketState> tcb);
+
+  virtual bool IsL4S (void);
+
   virtual Ptr<TcpCongestionOps> Fork ();
 
   /**

@@ -74,6 +74,26 @@ public:
   virtual std::string GetName () const = 0;
 
   /**
+   * \brief Set configuration required by congestion control algorithm
+   *
+   * \param tcb internal congestion state
+   */
+  virtual void Init (Ptr<TcpSocketState> tcb)
+    {
+      NS_UNUSED (tcb);
+    }
+
+  /**
+   * \brief Whether congestion control follows L4S marking
+   *
+   * \return true; if ECT(1) code otherwise false
+   */
+  virtual bool IsL4S (void)
+    {
+      return false;
+    }
+
+  /**
    * \brief Get the slow start threshold after a loss event
    *
    * Is guaranteed that the congestion control state (TcpAckState_t) is

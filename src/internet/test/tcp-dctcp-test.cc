@@ -159,8 +159,8 @@ void
 TcpDctcpCodePointsTest::ConfigureProperties ()
 {
   TcpGeneralTest::ConfigureProperties ();
-  SetEcn (SENDER, TcpSocketBase::ClassicEcn);
-  SetEcn (RECEIVER, TcpSocketBase::ClassicEcn);
+  SetEcnMode (SENDER, TcpSocketState::ClassicEcn);
+  SetEcnMode (RECEIVER, TcpSocketState::ClassicEcn);
 }
 
 /**
